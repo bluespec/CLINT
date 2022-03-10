@@ -1,6 +1,6 @@
 // Copyright (c) 2016-2019 Bluespec, Inc. All Rights Reserved
 
-package Near_Mem_IO_AXI4;
+package CLINT_AXI4;
 
 // ================================================================
 // This package implements an AXI4 slave IP with two pieces of RISC-V
@@ -38,10 +38,6 @@ package Near_Mem_IO_AXI4;
 // necessary to satisfy type-checking.
 // ================================================================
 
-export  Near_Mem_IO_AXI4_IFC (..),
-        mkNear_Mem_IO_AXI4;
-
-// ================================================================
 // BSV library imports
 
 import  FIFOF         :: *;
@@ -75,7 +71,7 @@ deriving (Bits, Eq, FShow);
 // ================================================================
 // Interface
 
-interface Near_Mem_IO_AXI4_IFC;
+interface CLINT_AXI4_IFC;
    // Reset
    interface Server #(Bit #(0), Bit #(0))  server_reset;
 
@@ -96,7 +92,7 @@ endinterface
 // ================================================================
 
 (* synthesize *)
-module mkNear_Mem_IO_AXI4 (Near_Mem_IO_AXI4_IFC);
+module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 
    // Verbosity: 0: quiet; 1: reset; 2: timer interrupts, all reads and writes
    Reg #(Bit #(4)) cfg_verbosity <- mkConfigReg (0);

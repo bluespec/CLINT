@@ -1,6 +1,6 @@
 // Copyright (c) 2016-2019 Bluespec, Inc. All Rights Reserved
 
-package Near_Mem_IO;
+package CLINT;
 
 // ================================================================
 // This package implements a slave IP with two unrelated pieces of
@@ -89,7 +89,7 @@ deriving (Bits, FShow);
 // ================================================================
 // Interface
 
-interface Near_Mem_IO_IFC;
+interface CLINT_IFC;
    // Reset
    interface Server #(Bit #(0), Bit #(0))  server_reset;
 
@@ -110,7 +110,7 @@ endinterface
 // ================================================================
 
 (* synthesize *)
-module mkNear_Mem_IO (Near_Mem_IO_IFC);
+module mkCLINT (CLINT_IFC);
 
    // Verbosity: 0: quiet; 1: reset; 2: timer interrupts, all reads and writes
    Reg #(Bit #(4)) cfg_verbosity <- mkConfigReg (1);
