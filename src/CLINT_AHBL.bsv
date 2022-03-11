@@ -3,7 +3,7 @@
 package CLINT_AHBL;
 
 // ================================================================
-// This package implements an AXI4 slave IP with two pieces of RISC-V
+// This package implements an AHB-L slave IP with two pieces of RISC-V
 // functionality that are unrelated except in that they generate local
 // interrupts for the Core.
 //
@@ -11,8 +11,8 @@ package CLINT_AHBL;
 //
 // - real-time timer:
 //     Two 64-bit memory-mapped registers (rg_time and rg_timecmp).
-//     Delivers an external interrupt whenever rg_timecmp >= rg_time.
-//     The timer is cleared when rg_timecmp is written.
+//     Delivers an external interrupt whenever rg_timecmp <= rg_time.
+//     The timer interrupt is cleared when rg_timecmp is written.
 //     Can be used for the RISC-V v1.10 Privilege Spec 'mtime' and
 //     'mtimecmp', and provides a memory-mapped API to access them.
 //
@@ -64,9 +64,6 @@ import SoC_Map       :: *;
 // Local constants and types
 
 // Module state
-typedef enum {MODULE_STATE_START, MODULE_STATE_READY } Module_State
-deriving (Bits, Eq, FShow);
-
 typedef enum { RST, RDY, RSP, ERR1, ERR2 } AHBL_Tgt_State deriving (Bits, Eq, FShow);
 // ================================================================
 // Interface
@@ -92,7 +89,7 @@ endinterface
 module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    // Verbosity: 0: quiet; 1: reset; 2: timer interrupts, all reads and writes
-   Reg #(Bit #(4)) cfg_verbosity <- mkConfigReg (0);
+   Bit #(2) verbosity = 0;
 
    // ----------------
    // Soft reset requests and responses
@@ -122,30 +119,30 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    // AHB-Lite signals and registers
 
    // Inputs
-   Wire #(Bool)        w_hsel      <- mkBypassWire;
-   Wire #(AHB_Fabric_Addr)   w_haddr     <- mkBypassWire;
-   Wire #(AHBL_Burst)  w_hburst    <- mkBypassWire;
-   Wire #(Bool)        w_hmastlock <- mkBypassWire;
-   Wire #(AHBL_Prot)   w_hprot     <- mkBypassWire;
-   Wire #(AHBL_Size)   w_hsize     <- mkBypassWire;
-   Wire #(AHBL_Trans)  w_htrans    <- mkBypassWire;
-   Wire #(AHB_Fabric_Data)   w_hwdata    <- mkBypassWire;
-   Wire #(Bool)        w_hwrite    <- mkBypassWire;
+   Wire #(Bool)            w_hsel      <- mkBypassWire;
+   Wire #(AHB_Fabric_Addr) w_haddr     <- mkBypassWire;
+   Wire #(AHBL_Burst)      w_hburst    <- mkBypassWire;
+   Wire #(Bool)            w_hmastlock <- mkBypassWire;
+   Wire #(AHBL_Prot)       w_hprot     <- mkBypassWire;
+   Wire #(AHBL_Size)       w_hsize     <- mkBypassWire;
+   Wire #(AHBL_Trans)      w_htrans    <- mkBypassWire;
+   Wire #(AHB_Fabric_Data) w_hwdata    <- mkBypassWire;
+   Wire #(Bool)            w_hwrite    <- mkBypassWire;
 
    // Outputs
-   Reg  #(Bool)       rg_hready    <- mkReg(True);
-   Reg  #(AHBL_Resp)  rg_hresp     <- mkReg(AHBL_OKAY);
-   Reg  #(AHB_Fabric_Data)  rg_hrdata    <- mkRegU;
+   Reg  #(Bool)            rg_hready    <- mkReg(True);
+   Reg  #(AHBL_Resp)       rg_hresp     <- mkReg(AHBL_OKAY);
+   Reg  #(AHB_Fabric_Data) rg_hrdata    <- mkRegU;
 
-   Reg #(AHB_Fabric_Addr)   rg_haddr     <- mkRegU;
-   Reg #(AHBL_Size)   rg_hsize     <- mkRegU;
-   Reg #(AHBL_Trans)  rg_htrans    <- mkRegU;
-   Reg #(Bool)        rg_hwrite    <- mkRegU;
+   Reg #(AHB_Fabric_Addr)  rg_haddr     <- mkRegU;
+   Reg #(AHBL_Size)        rg_hsize     <- mkRegU;
+   Reg #(AHBL_Trans)       rg_htrans    <- mkRegU;
+   Reg #(Bool)             rg_hwrite    <- mkRegU;
 
-   Reg #(AHBL_Tgt_State) rg_state  <- mkReg (RST);
+   Reg #(AHBL_Tgt_State)   rg_state  <- mkReg (RST);
 
    // Memory map
-   SoC_Map soc_map <- mkSoC_Map;
+   SoC_Map_IFC             soc_map <- mkSoC_Map;
 
    // ================================================================
    // BEHAVIOR
@@ -158,7 +155,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    endfunction
 
    function Bool fn_addr_is_ok (Fabric_Addr addr, AHBL_Size size);
-      return (   fn_is_aligned (addr[1:0], size)
+      return (   fn_ahbl_is_aligned (addr[1:0], size)
               && fn_addr_is_in_range (addr)
              );
    endfunction
@@ -184,7 +181,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       rg_hready       <= True;
       rg_hresp        <= AHBL_OKAY;
 
-      if (cfg_verbosity != 0)
+      if (verbosity != 0)
          $display ("%06d:[D]:%m.rl_reset", cur_cycle);
    endrule
 
@@ -193,7 +190,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    // Increment time, but saturate, do not wrap-around
    (* fire_when_enabled, no_implicit_conditions *)
-   rule rl_tick_timer (   (rg_state == MODULE_STATE_READY)
+   rule rl_tick_timer (   (rg_state == RDY)
                        && (crg_time [0] != '1)
                        && (! f_reset_reqs.notEmpty));
 
@@ -204,13 +201,13 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    Bool new_mtip = (crg_time [0] >= crg_timecmp [0]);
 
-   rule rl_compare ((rg_state == MODULE_STATE_READY)
+   rule rl_compare ((rg_state == RDY)
                     && (rg_mtip != new_mtip)
                     && (! f_reset_reqs.notEmpty));
 
       rg_mtip <= new_mtip;
       f_timer_interrupt_req.enq (new_mtip);
-      if (cfg_verbosity > 1)
+      if (verbosity > 1)
          $display ("%6d:[D]: Near_Mem_IO_AXI4.rl_compare: new MTIP = %0d, time = %0d, timecmp = %0d",
                    cur_cycle, new_mtip, crg_time [0], crg_timecmp [0]);
    endrule
@@ -266,7 +263,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       let wdata = w_hwdata;
       let werr = False;
 
-      if (cfg_verbosity > 1) begin
+      if (verbosity > 1) begin
          $display ("%06d:[D]:%m.rl_wr_req: rg_mtip = %0d", cur_cycle, rg_mtip);
          $display ("            (byte_addr 0x%08h) (wdata 0x%08h)", byte_addr, wdata);
       end
@@ -277,7 +274,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
          if (rg_msip != new_msip) begin
             rg_msip <= new_msip;
             f_sw_interrupt_req.enq (new_msip);
-            if (cfg_verbosity > 1)
+            if (verbosity > 1)
                $display ("            new MSIP = %0d", new_msip);
          end
       end
@@ -291,13 +288,13 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       // 64-bit mtimecmp register (lower-half)
       else if (word_addr == 'h_2000) begin   // byte_addr 4000
          Vector # (2, Bit #(32)) old_timecmp = unpack (crg_timecmp [1]);
-         Bit #(32) new_timecmp_L = fn_replace_bytes (  byte_addr[1:0]
+         Bit #(32) new_timecmp_L = fn_ahbl_update_wdata (  byte_addr[1:0]
                                                      , rg_hsize
                                                      , old_timecmp[0]
                                                      , wdata);
          crg_timecmp [1] <= {old_timecmp[1], new_timecmp_L};
 
-         if (cfg_verbosity > 1) begin
+         if (verbosity > 1) begin
             $display ("            Writing MTIMECMP");
             $display ("                old MTIMECMP         = 0x%016h", crg_timecmp[1]);
             $display ("                new MTIMECMP         = 0x%016h", {old_timecmp[1], new_timecmp_L});
@@ -308,13 +305,13 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       // 64-bit mtimecmp register (upper-half). For 32-bit fabrics only
       else if (word_addr == 'h_2001) begin   // byte_addr 4004
          Vector # (2, Bit #(32)) old_timecmp = unpack (crg_timecmp [1]);
-         Bit #(32) new_timecmp_H = fn_replace_bytes (  byte_addr[1:0]
+         Bit #(32) new_timecmp_H = fn_ahbl_update_wdata (  byte_addr[1:0]
                                                      , rg_hsize
                                                      , old_timecmp[1]
                                                      , wdata);
          crg_timecmp [1] <= {new_timecmp_H, old_timecmp[0]};
 
-         if (cfg_verbosity > 1) begin
+         if (verbosity > 1) begin
             $display ("            Writing MTIMECMP");
             $display ("                old MTIMECMP         = 0x%016h", crg_timecmp[1]);
             $display ("                new MTIMECMP         = 0x%016h", {new_timecmp_H, old_timecmp[0]});
@@ -325,13 +322,13 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       // 64-bit MTIME register (lower-half)
       else if (word_addr == 'h_2FFE) begin   // byte_addr BFF8
          Vector #(2, Bit #(32)) old_time = unpack (crg_time [1]);
-         Bit #(32) new_time_L = fn_replace_bytes (  byte_addr [1:0]
+         Bit #(32) new_time_L = fn_ahbl_update_wdata (  byte_addr [1:0]
                                                   , rg_hsize
                                                   , old_time[0]
                                                   , wdata);
          crg_time [1] <= {old_time[1], new_time_L};
 
-         if (cfg_verbosity > 1) begin
+         if (verbosity > 1) begin
             $display ("    Writing MTIME");
             $display ("        old MTIME = 0x%016h", crg_time [1]);
             $display ("        new MTIME = 0x%016h", {old_time[1], new_time_L});
@@ -341,13 +338,13 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       // 64-bit MTIME register (upper-half)
       else if (word_addr == 'h_2FFF) begin   // byte_addr BFFC
          Vector #(2, Bit #(32)) old_time = unpack (crg_time [1]);
-         Bit #(32) new_time_H = fn_replace_bytes (  byte_addr [1:0]
-                                                  , rg_hsize
-                                                  , old_time[1]
-                                                  , wdata);
+         Bit #(32) new_time_H = fn_ahbl_update_wdata (  byte_addr [1:0]
+                                                      , rg_hsize
+                                                      , old_time[1]
+                                                      , wdata);
          crg_time [1] <= {new_time_H, old_time[0]};
 
-         if (cfg_verbosity > 1) begin
+         if (verbosity > 1) begin
             $display ("    Writing MTIME");
             $display ("        old MTIME = 0x%016h", crg_time [1]);
             $display ("        new MTIME = 0x%016h", {new_time_H, old_time[0]});
@@ -356,7 +353,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
       // Error condition bad address
       else begin
-         werr = true;
+         werr = True;
          $display ("%06d:[E]:%m.rl_wr_req: unrecognized addr: 0x%08h"
             , cur_cycle, byte_addr);
       end
@@ -372,9 +369,9 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    // Handle 'memory'-read requests
 
    rule rl_rd_req ((rg_state == RSP) && (!rg_hwrite));
-      if (cfg_verbosity > 1) begin
+      if (verbosity > 1) begin
          $display ("%06d:[D]:%m.rl_rd_req: rg_mtip = %0d", cur_cycle, rg_mtip);
-         $display ("            (byte_addr 0x%08h) (wdata 0x%08h)", byte_addr, wdata);
+         $display ("            (byte_addr 0x%08h)", byte_addr);
       end
 
       Bit #(32) rdata = ?;
@@ -495,7 +492,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    interface Get get_timer_interrupt_req;
      method ActionValue#(Bool) get();
        let x <- toGet (f_timer_interrupt_req).get;
-       if (cfg_verbosity > 1)
+       if (verbosity > 1)
           $display ("%06d:[D]:%m.get_timer_interrupt_req: %x", cur_cycle, x);
        return x;
      endmethod
@@ -505,7 +502,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    interface Get get_sw_interrupt_req;
      method ActionValue#(Bool) get();
        let x <- toGet (f_sw_interrupt_req).get;
-       if (cfg_verbosity > 1)
+       if (verbosity > 1)
           $display ("%06d:[D]:%m.get_sw_interrupt_req: %x", cur_cycle, x);
        return x;
      endmethod
