@@ -69,9 +69,6 @@ typedef enum { RST, RDY, RSP, ERR1, ERR2 } AHBL_Tgt_State deriving (Bits, Eq, FS
 // Interface
 
 interface CLINT_AHBL_IFC;
-   // Reset
-   interface Server #(Bit #(0), Bit #(0))  server_reset;
-
    // Main Fabric Reqs/Rsps
    interface AHBL_Slave_IFC #(AHB_Wd_Data) target;
 
@@ -90,11 +87,6 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    // Verbosity: 0: quiet; 1: reset; 2: timer interrupts, all reads and writes
    Bit #(2) verbosity = 0;
-
-   // ----------------
-   // Soft reset requests and responses
-   FIFOF #(Bit #(0)) f_reset_reqs <- mkFIFOF;
-   FIFOF #(Bit #(0)) f_reset_rsps <- mkFIFOF;
 
    // ----------------
    // Timer registers
@@ -191,8 +183,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    // Increment time, but saturate, do not wrap-around
    (* fire_when_enabled, no_implicit_conditions *)
    rule rl_tick_timer (   (rg_state == RDY)
-                       && (crg_time [0] != '1)
-                       && (! f_reset_reqs.notEmpty));
+                       && (crg_time [0] != '1));
 
       crg_time [0] <= crg_time [0] + 1;
    endrule
@@ -202,8 +193,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    Bool new_mtip = (crg_time [0] >= crg_timecmp [0]);
 
    rule rl_compare ((rg_state == RDY)
-                    && (rg_mtip != new_mtip)
-                    && (! f_reset_reqs.notEmpty));
+                    && (rg_mtip != new_mtip));
 
       rg_mtip <= new_mtip;
       f_timer_interrupt_req.enq (new_mtip);
