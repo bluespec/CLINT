@@ -112,6 +112,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    // Inputs
    Wire #(Bool)            w_hsel      <- mkBypassWire;
+   Wire #(Bool)            w_hready_in <- mkBypassWire;
    Wire #(AHB_Fabric_Addr) w_haddr     <- mkBypassWire;
    Wire #(AHBL_Burst)      w_hburst    <- mkBypassWire;
    Wire #(Bool)            w_hmastlock <- mkBypassWire;
@@ -217,7 +218,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    (* fire_when_enabled, no_implicit_conditions *)
    rule rl_new_req (   (rg_state == RDY)
-                    && (w_hsel && (w_htrans == AHBL_NONSEQ)));
+                    && (w_hsel && w_hready_in && (w_htrans == AHBL_NONSEQ)));
 
       // Register fresh address-and-control inputs
       rg_haddr     <= w_haddr;
@@ -436,6 +437,10 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       // Inputs
       method Action hsel (Bool sel);
          w_hsel <= sel;
+      endmethod
+
+      method Action hready (Bool hready_in);
+         w_hready_in <= hready_in;
       endmethod
 
       method Action haddr (AHB_Fabric_Addr addr);
