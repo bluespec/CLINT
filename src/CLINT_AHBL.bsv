@@ -74,10 +74,10 @@ interface CLINT_AHBL_IFC;
 
    // Timer interrupt
    // True/False = set/clear interrupt-pending in CPU's MTIP
-   interface Get #(Bool)  get_timer_interrupt_req;
+   method Bool  timer_interrupt_pending;
 
    // Software interrupt
-   interface Get #(Bool)  get_sw_interrupt_req;
+   method Bool  sw_interrupt_pending;
 endinterface
 
 // ================================================================
@@ -95,9 +95,6 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    Reg #(Bit #(64)) crg_timecmp [2] <- mkCReg (2, 0);
 
    Reg #(Bool) rg_mtip <- mkReg (True);
-
-   // Timer-interrupt queue
-   FIFOF #(Bool) f_timer_interrupt_req <- mkFIFOF;
 
    // ----------------
    // Software-interrupt registers
@@ -161,9 +158,6 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    // Reset
 
    rule rl_reset (rg_state == RST);
-      f_timer_interrupt_req.clear;
-      f_sw_interrupt_req.clear;
-
       crg_time [1]    <= 1;
       crg_timecmp [1] <= 0;
       rg_mtip         <= True;
@@ -197,9 +191,8 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
                     && (rg_mtip != new_mtip));
 
       rg_mtip <= new_mtip;
-      f_timer_interrupt_req.enq (new_mtip);
       if (verbosity > 1)
-         $display ("%6d:[D]: Near_Mem_IO_AXI4.rl_compare: new MTIP = %0d, time = %0d, timecmp = %0d",
+         $display ("%6d:[D]:%m.rl_compare: new MTIP = %0d, time = %0d, timecmp = %0d",
                    cur_cycle, new_mtip, crg_time [0], crg_timecmp [0]);
    endrule
 
@@ -264,7 +257,6 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
          Bool new_msip = (wdata [0] == 1'b1);
          if (rg_msip != new_msip) begin
             rg_msip <= new_msip;
-            f_sw_interrupt_req.enq (new_msip);
             if (verbosity > 1)
                $display ("            new MSIP = %0d", new_msip);
          end
@@ -484,24 +476,10 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    endinterface
 
    // Timer interrupt
-   interface Get get_timer_interrupt_req;
-     method ActionValue#(Bool) get();
-       let x <- toGet (f_timer_interrupt_req).get;
-       if (verbosity > 1)
-          $display ("%06d:[D]:%m.get_timer_interrupt_req: %x", cur_cycle, x);
-       return x;
-     endmethod
-   endinterface
+   method Bool timer_interrupt_pending = rg_mtip;
 
    // Software interrupt
-   interface Get get_sw_interrupt_req;
-     method ActionValue#(Bool) get();
-       let x <- toGet (f_sw_interrupt_req).get;
-       if (verbosity > 1)
-          $display ("%06d:[D]:%m.get_sw_interrupt_req: %x", cur_cycle, x);
-       return x;
-     endmethod
-   endinterface
+   method Bool sw_interrupt_pending = rg_msip;
 endmodule
 
 // ================================================================
