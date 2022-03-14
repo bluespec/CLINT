@@ -86,7 +86,7 @@ endinterface
 module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    // Verbosity: 0: quiet; 1: reset; 2: timer interrupts, all reads and writes
-   Bit #(2) verbosity = 0;
+   Bit #(2) verbosity = 2;
 
    // ----------------
    // Timer registers
@@ -234,8 +234,8 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       if (verbosity != 0)
-         $display ("%06d:[D]:%m.rl_new_req: haddr 0x%08h",
-            w_haddr, fshow (w_hsize), " hwrite %0d htrans ", w_hwrite, fshow (w_htrans));
+         $display ("%06d:[D]:%m.rl_new_req: haddr 0x%08h"
+         , cur_cycle, w_haddr, fshow (w_hsize), " hwrite %0d htrans ", w_hwrite, fshow (w_htrans));
    endrule
 
    // ----------------------------------------------------------------
@@ -253,7 +253,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       // MSIP
-      if (word_addr == 'h_0000) begin
+      if (byte_addr == 'h_0000) begin
          Bool new_msip = (wdata [0] == 1'b1);
          if (rg_msip != new_msip) begin
             rg_msip <= new_msip;
@@ -263,13 +263,13 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       // The following ALIGN4B writes are only needed for 32b fabrics
-      else if (word_addr == 'h_0001) begin
+      else if (byte_addr == 'h_0004) begin
          // MSIPH
          noAction;    // upper 32 bits wired to 0
       end
 
       // 64-bit mtimecmp register (lower-half)
-      else if (word_addr == 'h_2000) begin   // byte_addr 4000
+      else if (byte_addr == 'h_4000) begin   // byte_addr 4000
          Vector # (2, Bit #(32)) old_timecmp = unpack (crg_timecmp [1]);
          Bit #(32) new_timecmp_L = fn_ahbl_update_wdata (  byte_addr[1:0]
                                                      , rg_hsize
@@ -286,7 +286,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       // 64-bit mtimecmp register (upper-half). For 32-bit fabrics only
-      else if (word_addr == 'h_2001) begin   // byte_addr 4004
+      else if (word_addr == 'h_4004) begin   // byte_addr 4004
          Vector # (2, Bit #(32)) old_timecmp = unpack (crg_timecmp [1]);
          Bit #(32) new_timecmp_H = fn_ahbl_update_wdata (  byte_addr[1:0]
                                                      , rg_hsize
@@ -303,7 +303,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       // 64-bit MTIME register (lower-half)
-      else if (word_addr == 'h_2FFE) begin   // byte_addr BFF8
+      else if (word_addr == 'h_BFF8) begin   // byte_addr BFF8
          Vector #(2, Bit #(32)) old_time = unpack (crg_time [1]);
          Bit #(32) new_time_L = fn_ahbl_update_wdata (  byte_addr [1:0]
                                                   , rg_hsize
@@ -319,7 +319,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       // 64-bit MTIME register (upper-half)
-      else if (word_addr == 'h_2FFF) begin   // byte_addr BFFC
+      else if (word_addr == 'h_BFFC) begin   // byte_addr BFFC
          Vector #(2, Bit #(32)) old_time = unpack (crg_time [1]);
          Bit #(32) new_time_H = fn_ahbl_update_wdata (  byte_addr [1:0]
                                                       , rg_hsize
