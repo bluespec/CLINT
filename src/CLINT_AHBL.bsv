@@ -70,7 +70,7 @@ typedef enum { RST, RDY, RSP, ERR1, ERR2 } AHBL_Tgt_State deriving (Bits, Eq, FS
 
 interface CLINT_AHBL_IFC;
    // Main Fabric Reqs/Rsps
-   interface AHBL_Slave_IFC #(AHB_Wd_Data) target;
+   interface AHBL_Slave_IFC #(AHB_Wd_Data) fabric;
 
    // Timer interrupt
    // True/False = set/clear interrupt-pending in CPU's MTIP
@@ -242,7 +242,6 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    // Handle memory-mapped write requests
 
    let byte_addr = rg_haddr - soc_map.m_clint_addr_base;
-   let word_addr = byte_addr >> 2;
    rule rl_wr_req ((rg_state == RSP) && (rg_hwrite));
       let wdata = w_hwdata;
       let werr = False;
@@ -286,7 +285,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       // 64-bit mtimecmp register (upper-half). For 32-bit fabrics only
-      else if (word_addr == 'h_4004) begin   // byte_addr 4004
+      else if (byte_addr == 'h_4004) begin   // byte_addr 4004
          Vector # (2, Bit #(32)) old_timecmp = unpack (crg_timecmp [1]);
          Bit #(32) new_timecmp_H = fn_ahbl_update_wdata (  byte_addr[1:0]
                                                      , rg_hsize
@@ -303,7 +302,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       // 64-bit MTIME register (lower-half)
-      else if (word_addr == 'h_BFF8) begin   // byte_addr BFF8
+      else if (byte_addr == 'h_BFF8) begin   // byte_addr BFF8
          Vector #(2, Bit #(32)) old_time = unpack (crg_time [1]);
          Bit #(32) new_time_L = fn_ahbl_update_wdata (  byte_addr [1:0]
                                                   , rg_hsize
@@ -319,7 +318,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
       end
 
       // 64-bit MTIME register (upper-half)
-      else if (word_addr == 'h_BFFC) begin   // byte_addr BFFC
+      else if (byte_addr == 'h_BFFC) begin   // byte_addr BFFC
          Vector #(2, Bit #(32)) old_time = unpack (crg_time [1]);
          Bit #(32) new_time_H = fn_ahbl_update_wdata (  byte_addr [1:0]
                                                       , rg_hsize
@@ -424,7 +423,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    // INTERFACE
 
    // Memory-mapped access: fabric interface
-   interface AHBL_Slave_IFC target;
+   interface AHBL_Slave_IFC fabric;
       // ----------------
       // Inputs
       method Action hsel (Bool sel);
