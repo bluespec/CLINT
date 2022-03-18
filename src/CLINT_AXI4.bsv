@@ -57,6 +57,7 @@ import ByteLane   :: *;
 // Project imports
 
 // Main fabric
+import SoC_Map       :: *;
 import AXI4_Types   :: *;
 import AXI4_Fabric  :: *;
 import Fabric_Defs  :: *;    // for Wd_Id, Wd_Addr, Wd_Data, Wd_User
@@ -72,21 +73,15 @@ deriving (Bits, Eq, FShow);
 // Interface
 
 interface CLINT_AXI4_IFC;
-   // Reset
-   interface Server #(Bit #(0), Bit #(0))  server_reset;
-
-   // set_addr_map should be called after this module's reset
-   method Action set_addr_map (Fabric_Addr addr_base, Fabric_Addr addr_lim);
-
    // Memory-mapped access
-   interface AXI4_Slave_IFC #(Wd_Id, Wd_Addr, Wd_Data, Wd_User) axi4_slave;
+   interface AXI4_Slave_IFC #(Wd_Id, Wd_Addr, Wd_Data, Wd_User) axi4;
 
    // Timer interrupt
    // True/False = set/clear interrupt-pending in CPU's MTIP
-   interface Get #(Bool)  get_timer_interrupt_req;
+   method Bool  timer_interrupt_pending;
 
    // Software interrupt
-   interface Get #(Bool)  get_sw_interrupt_req;
+   method Bool  sw_interrupt_pending;
 endinterface
 
 // ================================================================
@@ -95,21 +90,15 @@ endinterface
 module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 
    // Verbosity: 0: quiet; 1: reset; 2: timer interrupts, all reads and writes
-   Reg #(Bit #(4)) cfg_verbosity <- mkConfigReg (0);
+   Bit #(2) verbosity = 0;
 
    Reg #(Module_State) rg_state     <- mkReg (MODULE_STATE_START);
 
-   // ----------------
-   // Soft reset requests and responses
-   FIFOF #(Bit #(0)) f_reset_reqs <- mkFIFOF;
-   FIFOF #(Bit #(0)) f_reset_rsps <- mkFIFOF;
+   // Base and limit addrs for this memory-mapped block.
+   SoC_Map_IFC soc_map <- mkSoC_Map;
 
    // ----------------
    // Memory-mapped access
-
-   // Base and limit addrs for this memory-mapped block.
-   Reg #(Fabric_Addr) rg_addr_base <- mkRegU;
-   Reg #(Fabric_Addr) rg_addr_lim  <- mkRegU;
 
    // Connector to AXI4 fabric
    AXI4_Slave_Xactor_IFC #(Wd_Id, Wd_Addr, Wd_Data, Wd_User) slave_xactor <- mkAXI4_Slave_Xactor;
@@ -121,9 +110,6 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    Reg #(Bit #(64)) crg_timecmp [2] <- mkCReg (2, 0);
 
    Reg #(Bool) rg_mtip <- mkReg (True);
-
-   // Timer-interrupt queue
-   FIFOF #(Bool) f_timer_interrupt_req <- mkFIFOF;
 
    // ----------------
    // Software-interrupt registers
@@ -140,10 +126,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    // Reset
 
    rule rl_reset (rg_state == MODULE_STATE_START);
-      f_reset_reqs.deq;
-
       slave_xactor.reset;
-      f_timer_interrupt_req.clear;
       f_sw_interrupt_req.clear;
 
       rg_state        <= MODULE_STATE_READY;
@@ -152,14 +135,8 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
       rg_mtip         <= True;
       rg_msip         <= False;
 
-      f_reset_rsps.enq (?);
-
-      if (cfg_verbosity != 0)
-	 $display ("%0d: Near_Mem_IO_AXI4.rl_reset", cur_cycle);
-   endrule
-
-   rule rl_soft_reset (f_reset_reqs.notEmpty);
-      rg_state <= MODULE_STATE_START;
+      if (verbosity != 0)
+	 $display ("%06d:[D]:%m.rl_reset", cur_cycle);
    endrule
 
    // ----------------------------------------------------------------
@@ -168,8 +145,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    // Increment time, but saturate, do not wrap-around
    (* fire_when_enabled, no_implicit_conditions *)
    rule rl_tick_timer (   (rg_state == MODULE_STATE_READY)
-		       && (crg_time [0] != '1)
-		       && (! f_reset_reqs.notEmpty));
+		       && (crg_time [0] != '1));
 
       crg_time [0] <= crg_time [0] + 1;
    endrule
@@ -179,12 +155,10 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    Bool new_mtip = (crg_time [0] >= crg_timecmp [0]);
 
    rule rl_compare ((rg_state == MODULE_STATE_READY)
-		    && (rg_mtip != new_mtip)
-		    && (! f_reset_reqs.notEmpty));
+		    && (rg_mtip != new_mtip));
 
       rg_mtip <= new_mtip;
-      f_timer_interrupt_req.enq (new_mtip);
-      if (cfg_verbosity > 1)
+      if (verbosity > 1)
 	 $display ("%0d: Near_Mem_IO_AXI4.rl_compare: new MTIP = %0d, time = %0d, timecmp = %0d",
 		   cur_cycle, new_mtip, crg_time [0], crg_timecmp [0]);
    endrule
@@ -192,26 +166,19 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    // ----------------------------------------------------------------
    // Handle 'memory'-read requests
 
-   rule rl_process_rd_req (   (rg_state == MODULE_STATE_READY)
-			   && (! f_reset_reqs.notEmpty));
+   rule rl_process_rd_req (rg_state == MODULE_STATE_READY);
 
       let rda <- pop_o (slave_xactor.o_rd_addr);
-      if (cfg_verbosity > 1) begin
-	 $display ("%0d: Near_Mem_IO_AXI4.rl_process_rd_req: rg_mtip = %0d", cur_cycle, rg_mtip);
+      if (verbosity > 1) begin
+	 $display ("%06d:[D]:%m.rl_process_rd_req: rg_mtip = %0d", cur_cycle, rg_mtip);
 	 $display ("    ", fshow (rda));
       end
 
-      let        byte_addr = rda.araddr - rg_addr_base;
+      let        byte_addr = rda.araddr - soc_map.m_clint_addr_base;
       Bit #(64)  rdata = 0;
       AXI4_Resp  rresp = axi4_resp_okay;
 
-      if (rda.araddr < rg_addr_base) begin
-	 $display ("%0d: ERROR: Near_Mem_IO_AXI4.rl_process_rd_req: unrecognized addr", cur_cycle);
-	 $display ("            ", fshow (rda));
-	 rresp = axi4_resp_decerr;
-      end
-
-      else if (byte_addr == 'h_0000)
+      if (byte_addr == 'h_0000)
 	 // MSIP
 	 rdata = zeroExtend (rg_msip ? 1'b1 : 1'b0);
 
@@ -248,7 +215,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 	 rresp = axi4_resp_decerr;
 
       if (rresp != axi4_resp_okay) begin
-	 $display ("%0d: ERROR: Near_Mem_IO_AXI4.rl_process_rd_req: unrecognized addr", cur_cycle);
+	 $display ("%06d:[E]:%m.rl_process_rd_req: unrecognized addr", cur_cycle);
 	 $display ("            ", fshow (rda));
       end
 
@@ -261,8 +228,8 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 			      ruser: rda.aruser};
       slave_xactor.i_rd_data.enq (rdr);
 
-      if (cfg_verbosity > 1) begin
-	 $display ("%0d: Near_Mem_IO_AXI4.rl_process_rd_req", cur_cycle);
+      if (verbosity > 1) begin
+	 $display ("%06d:[D]:%m.rl_process_rd_req", cur_cycle);
 	 $display ("            ", fshow (rda));
 	 $display ("            ", fshow (rdr));
       end
@@ -271,13 +238,12 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    // ----------------------------------------------------------------
    // Handle 'memory'-write requests
 
-   rule rl_process_wr_req (   (rg_state == MODULE_STATE_READY)
-			   && (! f_reset_reqs.notEmpty));
+   rule rl_process_wr_req (rg_state == MODULE_STATE_READY);
 
       let wra <- pop_o (slave_xactor.o_wr_addr);
       let wrd <- pop_o (slave_xactor.o_wr_data);
-      if (cfg_verbosity > 1) begin
-	 $display ("%0d: Near_Mem_IO_AXI4.rl_process_wr_req: rg_mtip = %0d", cur_cycle, rg_mtip);
+      if (verbosity > 1) begin
+	 $display ("%06d:[D]:%m.rl_process_wr_req: rg_mtip = %0d", cur_cycle, rg_mtip);
 	 $display ("    ", fshow (wra));
 	 $display ("    ", fshow (wrd));
       end
@@ -286,23 +252,15 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
       Bit #(8)  wstrb     = zeroExtend (wrd.wstrb);
       Bit #(8)  data_byte = wdata [7:0];
 
-      let        byte_addr = wra.awaddr - rg_addr_base;
+      let        byte_addr = wra.awaddr - soc_map.m_clint_addr_base;
       AXI4_Resp  bresp     = axi4_resp_okay;
 
-      if (wra.awaddr < rg_addr_base) begin
-	 $display ("%0d: ERROR: Near_Mem_IO_AXI4.rl_process_wr_req: unrecognized addr", cur_cycle);
-	 $display ("            ", fshow (wra));
-	 $display ("            ", fshow (wrd));
-	 bresp = axi4_resp_decerr;
-      end
-
-      else if (byte_addr == 'h_0000) begin
+      if (byte_addr == 'h_0000) begin
 	 // MSIP
 	 Bool new_msip = (wdata [0] == 1'b1);
 	 if (rg_msip != new_msip) begin
 	    rg_msip <= new_msip;
-	    f_sw_interrupt_req.enq (new_msip);
-	    if (cfg_verbosity > 1)
+	    if (verbosity > 1)
 	       $display ("    new MSIP = %0d", new_msip);
 	 end
       end
@@ -315,7 +273,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 							  zeroExtend (wstrb));
 	 crg_timecmp [1] <= new_timecmp;
 
-	 if (cfg_verbosity > 1) begin
+	 if (verbosity > 1) begin
 	    $display ("    Writing MTIMECMP");
 	    $display ("        old MTIMECMP         = 0x%0h", old_timecmp);
 	    $display ("        new MTIMECMP         = 0x%0h", new_timecmp);
@@ -332,7 +290,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 						       zeroExtend (wstrb));
 	 crg_time [1] <= new_time;
 
-	 if (cfg_verbosity > 1) begin
+	 if (verbosity > 1) begin
 	    $display ("    Writing MTIME");
 	    $display ("        old MTIME = 0x%0h", old_time);
 	    $display ("        new MTIME = 0x%0h", new_time);
@@ -357,7 +315,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 	 Bit #(64) new_timecmp = fn_update_strobed_bytes (old_timecmp, x64, x64_strb);
 	 crg_timecmp [1] <= new_timecmp;
 
-	 if (cfg_verbosity > 1) begin
+	 if (verbosity > 1) begin
 	    $display ("    Writing MTIMECMP");
 	    $display ("        old MTIMECMP         = 0x%0h", old_timecmp);
 	    $display ("        new MTIMECMP         = 0x%0h", new_timecmp);
@@ -378,7 +336,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 	 Bit #(64) new_time = fn_update_strobed_bytes (old_time, x64, x64_strb);
 	 crg_time [1] <= new_time;
 
-	 if (cfg_verbosity > 1) begin
+	 if (verbosity > 1) begin
 	    $display ("    Writing MTIME");
 	    $display ("        old MTIME = 0x%0h", old_time);
 	    $display ("        new MTIME = 0x%0h", new_time);
@@ -389,7 +347,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 	 bresp = axi4_resp_decerr;
 
       if (bresp != axi4_resp_okay) begin
-	 $display ("%0d: ERROR: Near_Mem_IO_AXI4.rl_process_wr_req: unrecognized addr", cur_cycle);
+	 $display ("%06d:[E]:%m.rl_process_wr_req: unrecognized addr", cur_cycle);
 	 $display ("            ", fshow (wra));
 	 $display ("            ", fshow (wrd));
       end
@@ -400,8 +358,8 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 			      buser: wra.awuser};
       slave_xactor.i_wr_resp.enq (wrr);
 
-      if (cfg_verbosity > 1) begin
-	 $display ("%0d: Near_Mem_IO.AXI4.rl_process_wr_req", cur_cycle);
+      if (verbosity > 1) begin
+	 $display ("%06d:[D]:%m.AXI4.rl_process_wr_req", cur_cycle);
 	 $display ("            ", fshow (wra));
 	 $display ("            ", fshow (wrd));
 	 $display ("            ", fshow (wrr));
@@ -411,47 +369,15 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    // ================================================================
    // INTERFACE
 
-   // Reset
-   interface  server_reset = toGPServer (f_reset_reqs, f_reset_rsps);
-
-   // set_addr_map should be called after this module's reset
-   method Action  set_addr_map (Fabric_Addr addr_base, Fabric_Addr addr_lim);
-      if (addr_base [1:0] != 0)
-	 $display ("%0d: WARNING: Near_Mem_IO_AXI4.set_addr_map: addr_base 0x%0h is not 4-Byte-aligned",
-		   cur_cycle, addr_base);
-
-      if (addr_lim [1:0] != 0)
-	 $display ("%0d: WARNING: Near_Mem_IO_AXI4.set_addr_map: addr_lim 0x%0h is not 4-Byte-aligned",
-		   cur_cycle, addr_lim);
-
-      rg_addr_base <= addr_base;
-      rg_addr_lim  <= addr_lim;
-      $display ("%0d: Near_Mem_IO_AXI4.set_addr_map: addr_base 0x%0h addr_lim 0x%0h",
-		cur_cycle, addr_base, addr_lim);
-   endmethod
-
    // Memory-mapped access
-   interface  axi4_slave = slave_xactor.axi_side;
+   interface  axi4 = slave_xactor.axi_side;
 
    // Timer interrupt
-   interface Get get_timer_interrupt_req;
-     method ActionValue#(Bool) get();
-       let x <- toGet (f_timer_interrupt_req).get;
-       if (cfg_verbosity > 1)
-          $display ("%0d: Near_Mem_IO_AXI4: get_timer_interrupt_req: %x", cur_cycle, x);
-       return x;
-     endmethod
-   endinterface
+   method Bool timer_interrupt_pending = rg_mtip;
 
    // Software interrupt
-   interface Get get_sw_interrupt_req;
-     method ActionValue#(Bool) get();
-       let x <- toGet (f_sw_interrupt_req).get;
-       if (cfg_verbosity > 1)
-          $display ("%0d: Near_Mem_IO_AXI4: get_sw_interrupt_req: %x", cur_cycle, x);
-       return x;
-     endmethod
-   endinterface
+   method Bool sw_interrupt_pending = rg_msip;
+
 endmodule
 
 // ================================================================
