@@ -57,7 +57,6 @@ import ByteLane   :: *;
 // Project imports
 
 // Main fabric
-import SoC_Map       :: *;
 import AXI4_Types   :: *;
 import AXI4_Fabric  :: *;
 import Fabric_Defs  :: *;    // for Wd_Id, Wd_Addr, Wd_Data, Wd_User
@@ -78,9 +77,11 @@ interface CLINT_AXI4_IFC;
 
    // Timer interrupt
    // True/False = set/clear interrupt-pending in CPU's MTIP
+   (* always_ready *)
    method Bool  timer_interrupt_pending;
 
    // Software interrupt
+   (* always_ready *)
    method Bool  sw_interrupt_pending;
 endinterface
 
@@ -95,7 +96,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    Reg #(Module_State) rg_state     <- mkReg (MODULE_STATE_START);
 
    // Base and limit addrs for this memory-mapped block.
-   SoC_Map_IFC soc_map <- mkSoC_Map;
+   Fabric_Addr addr_mask = 'hffff;
 
    // ----------------
    // Memory-mapped access
@@ -174,7 +175,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 	 $display ("    ", fshow (rda));
       end
 
-      let        byte_addr = rda.araddr - soc_map.m_clint_addr_base;
+      let        byte_addr = rda.araddr & addr_mask;
       Bit #(64)  rdata = 0;
       AXI4_Resp  rresp = axi4_resp_okay;
 
@@ -252,7 +253,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
       Bit #(8)  wstrb     = zeroExtend (wrd.wstrb);
       Bit #(8)  data_byte = wdata [7:0];
 
-      let        byte_addr = wra.awaddr - soc_map.m_clint_addr_base;
+      let        byte_addr = wra.awaddr & addr_mask;
       AXI4_Resp  bresp     = axi4_resp_okay;
 
       if (byte_addr == 'h_0000) begin
