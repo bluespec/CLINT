@@ -26,7 +26,7 @@ package CLINT_AHBL;
 //     'h_0000/8 Bytes    msip        R/W Writing LSB=1 generates a software interrupt to hart0
 //
 // ----------------
-// This slave IP can be attached to fabrics with 32b- or 64b-wide data channels.
+// This slave IP can be attached to fabrics with 32b-wide data channels.
 //    (NOTE: this is the width of the fabric, which can be chosen
 //      independently of the native width of a CPU master on the
 //      fabric (such as RV32/RV64 for a RISC-V CPU).
@@ -36,6 +36,10 @@ package CLINT_AHBL;
 //
 // Some of the 'truncate()'s and 'zeroExtend()'s below are no-ops but
 // necessary to satisfy type-checking.
+//
+// NOTE: This module does not conduct address range checks. It is
+// expected that address range checks are the responsibility of the
+// system AHB-L decoder.
 // ================================================================
 
 // BSV library imports
@@ -58,7 +62,6 @@ import Cur_Cycle     :: *;
 import AHBL_Types    :: *;
 import AHBL_Defs     :: *;
 import Fabric_Defs   :: *;    // for Wd_Id, Wd_Addr, Wd_Data, Wd_User
-import SoC_Map       :: *;
 
 // ================================================================
 // Local constants and types
@@ -74,19 +77,26 @@ interface CLINT_AHBL_IFC;
 
    // Timer interrupt
    // True/False = set/clear interrupt-pending in CPU's MTIP
+   (* always_ready *)
    method Bool  timer_interrupt_pending;
 
    // Software interrupt
+   (* always_ready *)
    method Bool  sw_interrupt_pending;
 endinterface
 
 // ================================================================
-
+(*doc="This module does not conduct address range checks."*)
+(*doc="It is assumed that address range checks are the"*)
+(*doc="responsibility of the system AHB-L decoder."*)
 (* synthesize *)
 module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    // Verbosity: 0: quiet; 1: reset; 2: timer interrupts, all reads and writes
-   Bit #(2) verbosity = 2;
+   Bit #(2) verbosity = 0;
+
+   // Base and limit addrs for this memory-mapped block.
+   Fabric_Addr addr_mask = 'hffff;
 
    // ----------------
    // Timer registers
@@ -131,28 +141,14 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    Reg #(AHBL_Tgt_State)   rg_state  <- mkReg (RST);
 
-   // Memory map
-   SoC_Map_IFC             soc_map <- mkSoC_Map;
-
    // ================================================================
    // BEHAVIOR
    // ----------------
    // Address Checks
 
-   function Bool fn_addr_is_in_range (Fabric_Addr addr);
-      return (   (soc_map.m_clint_addr_base <= addr)
-              && (addr < soc_map.m_clint_addr_lim));
-   endfunction
-
-   function Bool fn_addr_is_ok (Fabric_Addr addr, AHBL_Size size);
-      return (   fn_ahbl_is_aligned (addr[1:0], size)
-              && fn_addr_is_in_range (addr)
-             );
-   endfunction
-
    // Is the address okay? Use the raw address from the bus as this check is done
    // in the first phase.
-   let addr_is_ok = fn_addr_is_ok (w_haddr, w_hsize);
+   let addr_is_ok = fn_ahbl_is_aligned (w_haddr[1:0], w_hsize);
 
    // ----------------------------------------------------------------
    // Reset
@@ -241,7 +237,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    // ----------------------------------------------------------------
    // Handle memory-mapped write requests
 
-   let byte_addr = rg_haddr - soc_map.m_clint_addr_base;
+   let byte_addr = rg_haddr & addr_mask;
    rule rl_wr_req ((rg_state == RSP) && (rg_hwrite));
       let wdata = w_hwdata;
       let werr = False;
