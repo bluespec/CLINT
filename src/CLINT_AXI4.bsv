@@ -40,10 +40,10 @@ package CLINT_AXI4;
 
 // BSV library imports
 
-import  FIFOF         :: *;
-import  GetPut        :: *;
-import  ClientServer  :: *;
-import  ConfigReg     :: *;
+import  FIFOF        :: *;
+import  GetPut       :: *;
+import  ClientServer :: *;
+import  ConfigReg    :: *;
 
 // ----------------
 // BSV additional libs
@@ -77,16 +77,17 @@ interface CLINT_AXI4_IFC;
 
    // Timer interrupt
    // True/False = set/clear interrupt-pending in CPU's MTIP
-   (* always_ready *)
-   method Bool  timer_interrupt_pending;
+   interface Get #(Bool)  get_timer_interrupt_req;
 
    // Software interrupt
-   (* always_ready *)
-   method Bool  sw_interrupt_pending;
+   interface Get #(Bool)  get_sw_interrupt_req;
 endinterface
 
 // ================================================================
-
+(*doc="This module does not conduct address range checks."*)
+(*doc="It is assumed that address range checks are the"*)
+(*doc="responsibility of the system AHB-L decoder."*)
+(*doc="Resets on hard reset"*)
 (* synthesize *)
 module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 
@@ -112,6 +113,9 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 
    Reg #(Bool) rg_mtip <- mkReg (True);
 
+   // Timer-interrupt queue
+   FIFOF #(Bool) f_timer_interrupt_req <- mkFIFOF;
+
    // ----------------
    // Software-interrupt registers
 
@@ -128,6 +132,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 
    rule rl_reset (rg_state == MODULE_STATE_START);
       slave_xactor.reset;
+      f_timer_interrupt_req.clear;
       f_sw_interrupt_req.clear;
 
       rg_state        <= MODULE_STATE_READY;
@@ -137,7 +142,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
       rg_msip         <= False;
 
       if (verbosity != 0)
-	 $display ("%06d:[D]:%m.rl_reset", cur_cycle);
+         $display ("%06d:[D]:%m.rl_reset", cur_cycle);
    endrule
 
    // ----------------------------------------------------------------
@@ -146,7 +151,7 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    // Increment time, but saturate, do not wrap-around
    (* fire_when_enabled, no_implicit_conditions *)
    rule rl_tick_timer (   (rg_state == MODULE_STATE_READY)
-		       && (crg_time [0] != '1));
+                       && (crg_time [0] != '1));
 
       crg_time [0] <= crg_time [0] + 1;
    endrule
@@ -155,13 +160,14 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 
    Bool new_mtip = (crg_time [0] >= crg_timecmp [0]);
 
-   rule rl_compare ((rg_state == MODULE_STATE_READY)
-		    && (rg_mtip != new_mtip));
+   rule rl_compare (   (rg_state == MODULE_STATE_READY)
+                    && (rg_mtip != new_mtip));
 
       rg_mtip <= new_mtip;
+      f_timer_interrupt_req.enq (new_mtip);
       if (verbosity > 1)
-	 $display ("%0d: Near_Mem_IO_AXI4.rl_compare: new MTIP = %0d, time = %0d, timecmp = %0d",
-		   cur_cycle, new_mtip, crg_time [0], crg_timecmp [0]);
+         $display ("%06d:[D]:%m.rl_compare: new MTIP = %0d, time = %0d, timecmp = %0d",
+                   cur_cycle, new_mtip, crg_time [0], crg_timecmp [0]);
    endrule
 
    // ----------------------------------------------------------------
@@ -171,8 +177,8 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
 
       let rda <- pop_o (slave_xactor.o_rd_addr);
       if (verbosity > 1) begin
-	 $display ("%06d:[D]:%m.rl_process_rd_req: rg_mtip = %0d", cur_cycle, rg_mtip);
-	 $display ("    ", fshow (rda));
+         $display ("%06d:[D]:%m.rl_process_rd_req: rg_mtip = %0d", cur_cycle, rg_mtip);
+         $display ("    ", fshow (rda));
       end
 
       let        byte_addr = rda.araddr & addr_mask;
@@ -180,59 +186,59 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
       AXI4_Resp  rresp = axi4_resp_okay;
 
       if (byte_addr == 'h_0000)
-	 // MSIP
-	 rdata = zeroExtend (rg_msip ? 1'b1 : 1'b0);
+         // MSIP
+         rdata = zeroExtend (rg_msip ? 1'b1 : 1'b0);
 
       else if (byte_addr == 'h_4000)
-	 // MTIMECMP
-	 rdata = truncate (crg_timecmp [0]);    // truncates for 32b fabrics
+         // MTIMECMP
+         rdata = truncate (crg_timecmp [0]);    // truncates for 32b fabrics
 
       else if (byte_addr == 'h_BFF8)
-	 // MTIME
-	 rdata = truncate (crg_time [0]);       // truncates for 32b fabrics
+         // MTIME
+         rdata = truncate (crg_time [0]);       // truncates for 32b fabrics
 
       // The following ALIGN4B reads are only needed for 32b fabrics
       else if (byte_addr == 'h_0004)
-	 // MSIPH
-	 rdata = 0;
+         // MSIPH
+         rdata = 0;
 
       else if (byte_addr == 'h_4004) begin
-	 // MTIMECMPH
-	 Bit #(64) x64 = crg_timecmp [0];
-	 if (valueOf (Wd_Data) == 32)
-	    x64 = { 0, x64 [63:32] };
-	 rdata = zeroExtend (x64);    // extends for 64b fabrics
+         // MTIMECMPH
+         Bit #(64) x64 = crg_timecmp [0];
+         if (valueOf (Wd_Data) == 32)
+            x64 = { 0, x64 [63:32] };
+         rdata = zeroExtend (x64);    // extends for 64b fabrics
       end
 
       else if (byte_addr == 'h_BFFC) begin
-	 // MTIMEH
-	 Bit #(64) x64 = crg_time [0];
-	 if (valueOf (Wd_Data) == 32)
-	    x64 = { 0, x64 [63:32] };
-	 rdata = zeroExtend (x64);    // extends for 64b fabrics
+         // MTIMEH
+         Bit #(64) x64 = crg_time [0];
+         if (valueOf (Wd_Data) == 32)
+            x64 = { 0, x64 [63:32] };
+         rdata = zeroExtend (x64);    // extends for 64b fabrics
       end
 
       else
-	 rresp = axi4_resp_decerr;
+         rresp = axi4_resp_decerr;
 
       if (rresp != axi4_resp_okay) begin
-	 $display ("%06d:[E]:%m.rl_process_rd_req: unrecognized addr", cur_cycle);
-	 $display ("            ", fshow (rda));
+         $display ("%06d:[E]:%m.rl_process_rd_req: unrecognized addr", cur_cycle);
+         $display ("            ", fshow (rda));
       end
 
       // Send read-response to bus
       Fabric_Data x = truncate (rdata);
       let rdr = AXI4_Rd_Data {rid:   rda.arid,
-			      rdata: x,
-			      rresp: rresp,
-			      rlast: True,
-			      ruser: rda.aruser};
+                              rdata: x,
+                              rresp: rresp,
+                              rlast: True,
+                              ruser: rda.aruser};
       slave_xactor.i_rd_data.enq (rdr);
 
       if (verbosity > 1) begin
-	 $display ("%06d:[D]:%m.rl_process_rd_req", cur_cycle);
-	 $display ("            ", fshow (rda));
-	 $display ("            ", fshow (rdr));
+         $display ("%06d:[D]:%m.rl_process_rd_req", cur_cycle);
+         $display ("            ", fshow (rda));
+         $display ("            ", fshow (rdr));
       end
    endrule
 
@@ -244,9 +250,9 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
       let wra <- pop_o (slave_xactor.o_wr_addr);
       let wrd <- pop_o (slave_xactor.o_wr_data);
       if (verbosity > 1) begin
-	 $display ("%06d:[D]:%m.rl_process_wr_req: rg_mtip = %0d", cur_cycle, rg_mtip);
-	 $display ("    ", fshow (wra));
-	 $display ("    ", fshow (wrd));
+         $display ("%06d:[D]:%m.rl_process_wr_req: rg_mtip = %0d", cur_cycle, rg_mtip);
+         $display ("    ", fshow (wra));
+         $display ("    ", fshow (wrd));
       end
 
       Bit #(64) wdata     = zeroExtend (wrd.wdata);
@@ -257,113 +263,114 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
       AXI4_Resp  bresp     = axi4_resp_okay;
 
       if (byte_addr == 'h_0000) begin
-	 // MSIP
-	 Bool new_msip = (wdata [0] == 1'b1);
-	 if (rg_msip != new_msip) begin
-	    rg_msip <= new_msip;
-	    if (verbosity > 1)
-	       $display ("    new MSIP = %0d", new_msip);
-	 end
+         // MSIP
+         Bool new_msip = (wdata [0] == 1'b1);
+         if (rg_msip != new_msip) begin
+            rg_msip <= new_msip;
+            f_sw_interrupt_req.enq (new_msip);
+            if (verbosity > 1)
+               $display ("    new MSIP = %0d", new_msip);
+         end
       end
 
       else if (byte_addr == 'h_4000) begin
-	 // MTIMECMP
-	 Bit #(64) old_timecmp = crg_timecmp [1];
-	 Bit #(64) new_timecmp = fn_update_strobed_bytes (old_timecmp,
-							  zeroExtend (wdata),
-							  zeroExtend (wstrb));
-	 crg_timecmp [1] <= new_timecmp;
+         // MTIMECMP
+         Bit #(64) old_timecmp = crg_timecmp [1];
+         Bit #(64) new_timecmp = fn_update_strobed_bytes (old_timecmp,
+                                                          zeroExtend (wdata),
+                                                          zeroExtend (wstrb));
+         crg_timecmp [1] <= new_timecmp;
 
-	 if (verbosity > 1) begin
-	    $display ("    Writing MTIMECMP");
-	    $display ("        old MTIMECMP         = 0x%0h", old_timecmp);
-	    $display ("        new MTIMECMP         = 0x%0h", new_timecmp);
-	    $display ("        cur MTIME            = 0x%0h", crg_time [1]);
-	    $display ("        new MTIMECMP - MTIME = 0x%0h", new_timecmp - crg_time [1]);
-	 end
+         if (verbosity > 1) begin
+            $display ("    Writing MTIMECMP");
+            $display ("        old MTIMECMP         = 0x%0h", old_timecmp);
+            $display ("        new MTIMECMP         = 0x%0h", new_timecmp);
+            $display ("        cur MTIME            = 0x%0h", crg_time [1]);
+            $display ("        new MTIMECMP - MTIME = 0x%0h", new_timecmp - crg_time [1]);
+         end
       end
 
       else if (byte_addr == 'h_BFF8) begin
-	 // MTIME
-	 Bit #(64) old_time = crg_time [1];
-	 Bit #(64) new_time = fn_update_strobed_bytes (old_time,
-						       zeroExtend (wdata),
-						       zeroExtend (wstrb));
-	 crg_time [1] <= new_time;
+         // MTIME
+         Bit #(64) old_time = crg_time [1];
+         Bit #(64) new_time = fn_update_strobed_bytes (old_time,
+                                                       zeroExtend (wdata),
+                                                       zeroExtend (wstrb));
+         crg_time [1] <= new_time;
 
-	 if (verbosity > 1) begin
-	    $display ("    Writing MTIME");
-	    $display ("        old MTIME = 0x%0h", old_time);
-	    $display ("        new MTIME = 0x%0h", new_time);
-	 end
+         if (verbosity > 1) begin
+            $display ("    Writing MTIME");
+            $display ("        old MTIME = 0x%0h", old_time);
+            $display ("        new MTIME = 0x%0h", new_time);
+         end
       end
 
       // The following ALIGN4B writes are only needed for 32b fabrics
       else if (byte_addr == 'h_0004) begin
-	 // MSIPH
-	 noAction;    // upper 32 bits wired to 0
+         // MSIPH
+         noAction;    // upper 32 bits wired to 0
       end
 
       else if (byte_addr == 'h_4004) begin
-	 // MTIMECMPH
-	 Bit #(64) old_timecmp = crg_timecmp [1];
-	 Bit #(64) x64      = zeroExtend (wdata);
-	 Bit #(8)  x64_strb = zeroExtend (wstrb);
-	 if (valueOf (Wd_Data) == 32) begin
-	    x64      = { x64 [31:0], 0 };
-	    x64_strb = { x64_strb [3:0], 0 };
-	 end
-	 Bit #(64) new_timecmp = fn_update_strobed_bytes (old_timecmp, x64, x64_strb);
-	 crg_timecmp [1] <= new_timecmp;
+         // MTIMECMPH
+         Bit #(64) old_timecmp = crg_timecmp [1];
+         Bit #(64) x64      = zeroExtend (wdata);
+         Bit #(8)  x64_strb = zeroExtend (wstrb);
+         if (valueOf (Wd_Data) == 32) begin
+            x64      = { x64 [31:0], 0 };
+            x64_strb = { x64_strb [3:0], 0 };
+         end
+         Bit #(64) new_timecmp = fn_update_strobed_bytes (old_timecmp, x64, x64_strb);
+         crg_timecmp [1] <= new_timecmp;
 
-	 if (verbosity > 1) begin
-	    $display ("    Writing MTIMECMP");
-	    $display ("        old MTIMECMP         = 0x%0h", old_timecmp);
-	    $display ("        new MTIMECMP         = 0x%0h", new_timecmp);
-	    $display ("        cur MTIME            = 0x%0h", crg_time [1]);
-	    $display ("        new MTIMECMP - MTIME = 0x%0h", new_timecmp - crg_time [1]);
-	 end
+         if (verbosity > 1) begin
+            $display ("    Writing MTIMECMP");
+            $display ("        old MTIMECMP         = 0x%0h", old_timecmp);
+            $display ("        new MTIMECMP         = 0x%0h", new_timecmp);
+            $display ("        cur MTIME            = 0x%0h", crg_time [1]);
+            $display ("        new MTIMECMP - MTIME = 0x%0h", new_timecmp - crg_time [1]);
+         end
       end
 
       else if (byte_addr == 'h_BFFC) begin
-	 // MTIMEH
-	 Bit #(64) old_time = crg_time [1];
-	 Bit #(64) x64      = zeroExtend (wdata);
-	 Bit #(8)  x64_strb = zeroExtend (wstrb);
-	 if (valueOf (Wd_Data) == 32) begin
-	    x64      = { x64 [31:0], 0 };
-	    x64_strb = { x64_strb [3:0], 0 };
-	 end
-	 Bit #(64) new_time = fn_update_strobed_bytes (old_time, x64, x64_strb);
-	 crg_time [1] <= new_time;
+         // MTIMEH
+         Bit #(64) old_time = crg_time [1];
+         Bit #(64) x64      = zeroExtend (wdata);
+         Bit #(8)  x64_strb = zeroExtend (wstrb);
+         if (valueOf (Wd_Data) == 32) begin
+            x64      = { x64 [31:0], 0 };
+            x64_strb = { x64_strb [3:0], 0 };
+         end
+         Bit #(64) new_time = fn_update_strobed_bytes (old_time, x64, x64_strb);
+         crg_time [1] <= new_time;
 
-	 if (verbosity > 1) begin
-	    $display ("    Writing MTIME");
-	    $display ("        old MTIME = 0x%0h", old_time);
-	    $display ("        new MTIME = 0x%0h", new_time);
-	 end
+         if (verbosity > 1) begin
+            $display ("    Writing MTIME");
+            $display ("        old MTIME = 0x%0h", old_time);
+            $display ("        new MTIME = 0x%0h", new_time);
+         end
       end
 
       else
-	 bresp = axi4_resp_decerr;
+         bresp = axi4_resp_decerr;
 
       if (bresp != axi4_resp_okay) begin
-	 $display ("%06d:[E]:%m.rl_process_wr_req: unrecognized addr", cur_cycle);
-	 $display ("            ", fshow (wra));
-	 $display ("            ", fshow (wrd));
+         $display ("%06d:[E]:%m.rl_process_wr_req: unrecognized addr", cur_cycle);
+         $display ("            ", fshow (wra));
+         $display ("            ", fshow (wrd));
       end
 
       // Send write-response to bus
       let wrr = AXI4_Wr_Resp {bid:   wra.awid,
-			      bresp: bresp,
-			      buser: wra.awuser};
+                              bresp: bresp,
+                              buser: wra.awuser};
       slave_xactor.i_wr_resp.enq (wrr);
 
       if (verbosity > 1) begin
-	 $display ("%06d:[D]:%m.AXI4.rl_process_wr_req", cur_cycle);
-	 $display ("            ", fshow (wra));
-	 $display ("            ", fshow (wrd));
-	 $display ("            ", fshow (wrr));
+         $display ("%06d:[D]:%m.AXI4.rl_process_wr_req", cur_cycle);
+         $display ("            ", fshow (wra));
+         $display ("            ", fshow (wrd));
+         $display ("            ", fshow (wrr));
       end
    endrule
 
@@ -374,10 +381,24 @@ module mkCLINT_AXI4 (CLINT_AXI4_IFC);
    interface  axi4 = slave_xactor.axi_side;
 
    // Timer interrupt
-   method Bool timer_interrupt_pending = rg_mtip;
+   interface Get get_timer_interrupt_req;
+     method ActionValue#(Bool) get();
+       let x <- toGet (f_timer_interrupt_req).get;
+       if (verbosity > 1)
+          $display ("%06d:[D]:%m.get_timer_interrupt_req: %x", cur_cycle, x);
+       return x;
+     endmethod
+   endinterface
 
    // Software interrupt
-   method Bool sw_interrupt_pending = rg_msip;
+   interface Get get_sw_interrupt_req;
+     method ActionValue#(Bool) get();
+       let x <- toGet (f_sw_interrupt_req).get;
+       if (verbosity > 1)
+          $display ("%06d:[D]:%m.get_sw_interrupt_req: %x", cur_cycle, x);
+       return x;
+     endmethod
+   endinterface
 
 endmodule
 

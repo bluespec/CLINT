@@ -77,23 +77,24 @@ interface CLINT_AHBL_IFC;
 
    // Timer interrupt
    // True/False = set/clear interrupt-pending in CPU's MTIP
-   (* always_ready *)
-   method Bool  timer_interrupt_pending;
+   interface Get #(Bool)  get_timer_interrupt_req;
 
    // Software interrupt
-   (* always_ready *)
-   method Bool  sw_interrupt_pending;
+   interface Get #(Bool)  get_sw_interrupt_req;
 endinterface
 
 // ================================================================
 (*doc="This module does not conduct address range checks."*)
 (*doc="It is assumed that address range checks are the"*)
 (*doc="responsibility of the system AHB-L decoder."*)
+(*doc="Resets on hard reset"*)
 (* synthesize *)
 module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    // Verbosity: 0: quiet; 1: reset; 2: timer interrupts, all reads and writes
    Bit #(2) verbosity = 0;
+
+   Reg #(AHBL_Tgt_State)   rg_state  <- mkReg (RST);
 
    // Base and limit addrs for this memory-mapped block.
    Fabric_Addr addr_mask = 'hffff;
@@ -105,6 +106,9 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    Reg #(Bit #(64)) crg_timecmp [2] <- mkCReg (2, 0);
 
    Reg #(Bool) rg_mtip <- mkReg (True);
+
+   // Timer-interrupt queue
+   FIFOF #(Bool) f_timer_interrupt_req <- mkFIFOF;
 
    // ----------------
    // Software-interrupt registers
@@ -139,8 +143,6 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    Reg #(AHBL_Trans)       rg_htrans    <- mkRegU;
    Reg #(Bool)             rg_hwrite    <- mkRegU;
 
-   Reg #(AHBL_Tgt_State)   rg_state  <- mkReg (RST);
-
    // ================================================================
    // BEHAVIOR
    // ----------------
@@ -154,13 +156,16 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    // Reset
 
    rule rl_reset (rg_state == RST);
+      f_timer_interrupt_req.clear;
+      f_sw_interrupt_req.clear;
+
+      rg_state        <= RDY;
       crg_time [1]    <= 1;
       crg_timecmp [1] <= 0;
       rg_mtip         <= True;
       rg_msip         <= False;
 
       // ready the fabric interface ...
-      rg_state        <= RDY;
       rg_hready       <= True;
       rg_hresp        <= AHBL_OKAY;
 
@@ -183,12 +188,13 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
 
    Bool new_mtip = (crg_time [0] >= crg_timecmp [0]);
 
-   rule rl_compare ((rg_state == RDY)
+   rule rl_compare (   (rg_state == RDY)
                     && (rg_mtip != new_mtip));
 
       rg_mtip <= new_mtip;
+      f_timer_interrupt_req.enq (new_mtip);
       if (verbosity > 1)
-         $display ("%6d:[D]:%m.rl_compare: new MTIP = %0d, time = %0d, timecmp = %0d",
+         $display ("%06d:[D]:%m.rl_compare: new MTIP = %0d, time = %0d, timecmp = %0d",
                    cur_cycle, new_mtip, crg_time [0], crg_timecmp [0]);
    endrule
 
@@ -252,6 +258,7 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
          Bool new_msip = (wdata [0] == 1'b1);
          if (rg_msip != new_msip) begin
             rg_msip <= new_msip;
+            f_sw_interrupt_req.enq (new_msip);
             if (verbosity > 1)
                $display ("            new MSIP = %0d", new_msip);
          end
@@ -471,10 +478,25 @@ module mkCLINT_AHBL (CLINT_AHBL_IFC);
    endinterface
 
    // Timer interrupt
-   method Bool timer_interrupt_pending = rg_mtip;
+   interface Get get_timer_interrupt_req;
+     method ActionValue#(Bool) get();
+       let x <- toGet (f_timer_interrupt_req).get;
+       if (verbosity > 1)
+          $display ("%06d:[D]:%m.get_timer_interrupt_req: %x", cur_cycle, x);
+       return x;
+     endmethod
+   endinterface
 
    // Software interrupt
-   method Bool sw_interrupt_pending = rg_msip;
+   interface Get get_sw_interrupt_req;
+     method ActionValue#(Bool) get();
+       let x <- toGet (f_sw_interrupt_req).get;
+       if (verbosity > 1)
+          $display ("%06d:[D]:%m.get_sw_interrupt_req: %x", cur_cycle, x);
+       return x;
+     endmethod
+   endinterface
+
 endmodule
 
 // ================================================================
